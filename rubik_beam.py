@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 import numpy as np
+import random
+
 
 def color(v):
     return v.argmax().item()
@@ -65,6 +67,7 @@ def clock(center):
         [1 + 8 * center, 3 + 8 * center, 6 + 8 * center, 4 + 8 * center],
     ]
 
+
 def counter(center):
     return [
         [0 + 8 * center, 2 + 8 * center, 7 + 8 * center, 5 + 8 * center],
@@ -92,17 +95,20 @@ def l(state):
         counter(4) + [[0, 8, 40, 31], [3, 11, 43, 28], [5, 13, 45, 26]],
     )
 
+
 def r(state):
     return cycles(
         state,
         clock(2) + [[2, 10, 42, 29], [4, 12, 44, 27], [7, 15, 47, 24]],
     )
-    
+
+
 def f(state):
     return cycles(
         state,
         clock(1) + [[7, 34, 40, 21], [6, 36, 41, 19], [5, 39, 42, 16]],
     )
+
 
 def b(state):
     return cycles(
@@ -110,7 +116,9 @@ def b(state):
         counter(3) + [[0, 37, 47, 18], [1, 35, 46, 20], [2, 32, 45, 23]],
     )
 
+
 _SOLVED_STATE = solved_state()
+
 
 def step(depth, prev=None):
     if depth == 0:
@@ -125,25 +133,51 @@ def step(depth, prev=None):
                     states.append(state)
     return torch.stack(states)
 
+
 _MOVES = list(map(torch.vmap, [u, d, l, r, f, b]))
 
 _STEPS = 20
 data = []
 
-_HASH = torch.randint(0, 1<<54, (288,), dtype=torch.int64).cpu()
+reload = True
+
+if reload:
+    _HASH = torch.load("hash.pt")
+else:
+    _HASH = torch.randint(0, 1 << 54, (288,), dtype=torch.int64).cpu()
+    torch.save(_HASH, "hash.pt")
+
 
 def hash_state(state):
     return torch.dot(_HASH, state.long()).item()
 
-all_states = torch.stack([_SOLVED_STATE]).cuda()
+
 sample_size = 300000
 
-if True:
-    data_tensor = torch.load("data.pt").cuda()
-else:
-    for step_count in range(_STEPS):
+
+def find_moves(start, target, depth):
+    if depth == 0:
+        return None
+    for move in [u, d, l, r, f, b]:
+        for rep in [1, 2, 3]:
+            next_state = start
+            for _ in range(rep):
+                next_state = move(next_state)
+            if next_state.equal(target):
+                return [move.__name__ * rep]
+            moves = find_moves(next_state, target, depth - 1)
+            if moves is not None:
+                return [move.__name__ * rep] + moves
+    return None
+
+
+def run_steps(first_state, num_steps):
+    all_states = torch.stack([first_state]).cuda()
+    five_states = None
+    data = []
+    for step_count in range(num_steps):
         start = time.time()
-        #print(start)
+        # print(start)
         new_states = None
         for move in _MOVES:
             news = []
@@ -164,11 +198,17 @@ else:
                 five_states = all_states.cpu()
             all_states = all_states[torch.randperm(all_states.size(0))[:sample_size]]
         data.append(all_states)
-        print(step_count, time.time() - start, all_states.shape)
-        data_tensor = torch.cat(data)
-        torch.save(data_tensor, "data.pt")
+        #print(step_count, time.time() - start, all_states.shape)
+    return data, five_states
 
-if True:
+
+if reload:
+    data = torch.load("data.pt")
+else:
+    data, five_states = run_steps(_SOLVED_STATE, _STEPS)
+    torch.save(data, "data.pt")
+
+if reload:
     five_hashes_tensor = torch.load("five_hashes.pt")
     five_states = torch.load("five_states.pt")
     five_hash_set = set(five_hashes_tensor.cpu().numpy())
@@ -187,6 +227,7 @@ else:
     torch.save(five_states, "five_states.pt")
     torch.save(five_hashes_tensor, "five_hashes.pt")
 
+
 def is_solved(state):
     h = hash_state(state)
     if h not in five_hash_set:
@@ -196,87 +237,210 @@ def is_solved(state):
             return True
     return False
 
-task = [u, f, f, r, d, l, u, b, b, u]
-state = _SOLVED_STATE
-for move in task:
-    state = move(state)
-show_state(state)
-print(is_solved(state))
 
-exit()
+def candidates(state, depth=4):
+    all_states, _ = run_steps(state, depth)
+    return torch.cat(all_states).unique(dim=0, sorted=False)
 
-_HIDDEN = 256
 
-_LOWLOW = 14
-_LOW = 16
-_HIGH = 16
-_HIGHHIGH = 18
+def thing():
+    show_state(five_states[42])
+    print(is_solved(five_states[42]))
+
+    task = [u, l, r, r, f, d, d, d, l]
+    state = _SOLVED_STATE
+    for move in task:
+        state = move(state)
+    show_state(state)
+    print(is_solved(state))
+
+    for move in [f, r, l, b]:
+        state = move(state)
+    show_state(state)
+    print(is_solved(state))
+
+    guesses = candidates(state)
+    print(guesses.shape)
+    for i, guess in enumerate(guesses):
+        if is_solved(guess.cpu()):
+            print(i, "Solved")
+            show_state(guess)
+            break
+    else:
+        print("Not solved")
+
+    exit()
+
+
+# _LOWLOW = 14
+# _LOW = 16
+# _HIGH = 16
+# _HIGHHIGH = 18
+
+# simple = nn.Sequential(
+#     nn.Linear(288, _HIDDEN),
+#     nn.ReLU(),
+#     nn.Dropout(_DROPOUT),
+#     nn.Linear(_HIDDEN, _HIDDEN),
+#     nn.ReLU(),
+#     nn.Dropout(_DROPOUT),
+#     nn.Linear(_HIDDEN, _HIDDEN),
+#     nn.ReLU(),
+#     nn.Dropout(_DROPOUT),
+#     nn.Linear(_HIDDEN, _HIDDEN),
+#     nn.ReLU(),
+#     nn.Dropout(_DROPOUT),
+#     nn.Linear(_HIDDEN, _HIDDEN),
+#     nn.ReLU(),
+#     nn.Dropout(_DROPOUT),
+#     nn.Linear(_HIDDEN, 1),
+#     nn.Sigmoid(),
+# ).cuda()
+# loss_fn = nn.MSELoss()
+
+_HIDDEN = 512
 _DROPOUT = 0.25
-simple = nn.Sequential(
-    nn.Linear(288, _HIDDEN),
-    nn.ReLU(),
-    nn.Dropout(_DROPOUT),
-    nn.Linear(_HIDDEN, _HIDDEN),
-    nn.ReLU(),
-    nn.Dropout(_DROPOUT),
-    nn.Linear(_HIDDEN, _HIDDEN),
-    nn.ReLU(),
-    nn.Dropout(_DROPOUT),
-    nn.Linear(_HIDDEN, _HIDDEN),
-    nn.ReLU(),
-    nn.Dropout(_DROPOUT),
-    nn.Linear(_HIDDEN, _HIDDEN),
-    nn.ReLU(),
-    nn.Dropout(_DROPOUT),
-    nn.Linear(_HIDDEN, 1),
-    nn.Sigmoid(),
-).cuda()
 
-loss_fn = nn.MSELoss()
-optimizer = torch.optim.Adam(simple.parameters(), lr=0.0001)
+_CLASSIFIER_DEPTH = 8
+_LOW_CLASS = 8
+_HIGH_CLASS = 18
 
-train_size = sample_size
-test_size = sample_size // 10
+simple_classifier_components = (
+    [nn.Linear(288, _HIDDEN), nn.ReLU(), nn.Dropout(_DROPOUT)]
+    + [nn.Linear(_HIDDEN, _HIDDEN), nn.ReLU(), nn.Dropout(_DROPOUT)] * _CLASSIFIER_DEPTH
+    + [nn.Linear(_HIDDEN, 1)]
+)
 
-small_data = torch.cat(data[_LOWLOW:_LOW])
-small_data = small_data[torch.randperm(small_data.size(0))]
-small_train = small_data[:train_size]
-small_test = small_data[train_size:train_size + test_size]
+simple_classifier = nn.Sequential(*simple_classifier_components).cuda()
 
-large_data = torch.cat(data[_HIGH:_HIGHHIGH])
-large_data = large_data[torch.randperm(large_data.size(0))]
-large_train = large_data[:train_size]
-large_test = large_data[train_size:train_size + test_size]
+_TRAIN_MODEL = False
 
-train_input = torch.cat([small_train, large_train])
-train_output = torch.cat([torch.ones(train_size), torch.zeros(train_size)]).unsqueeze(1).cuda()
-# Shuffle the training data
-train_perm = torch.randperm(train_input.size(0))
-train_input = train_input[train_perm].float()
-train_output = train_output[train_perm].float()
+if not _TRAIN_MODEL:
+    simple_classifier.load_state_dict(torch.load("classifier00005.pt"))
+    state = _SOLVED_STATE
+    for _ in range(40):
+        move = random.choice([u, d, l, r, f, b])
+        state = move(state)
+    beam = torch.stack([state]).cuda()
+    beam_size = 20
+    iter = 0
+    while True:
+        print(f"Iteration {iter}")
+        iter += 1
+        next_states = []
+        next_scores = []
+        for i, state in enumerate(beam):
+            print(f"Beam {i}")
+            news = candidates(state, depth=3)
+            for j, new in enumerate(news):
+                if is_solved(new.cpu()):
+                    print("Solved")
+                    show_state(new)
+                    exit()
+            scores = simple_classifier(news.float())
+            #print(torch.min(scores), torch.max(scores), torch.mean(scores))
+            min_ind = torch.topk(scores.flatten(), beam_size, largest=False).indices
+            next_states.append(news[min_ind])
+            next_scores.append(scores[min_ind])
+        beam = torch.cat(next_states)
+        beam_scores = torch.cat(next_scores)
+        min_ind = torch.topk(beam_scores.flatten(), beam_size, largest=False).indices
+        beam_scores = beam_scores[min_ind]
+        beam = beam[min_ind]
+        print(torch.min(beam_scores).item(), torch.mean(beam_scores).item(), torch.max(beam_scores).item())
+    exit()
 
-test_input = torch.cat([small_test, large_test])
-test_output = torch.cat([torch.ones(test_size), torch.zeros(test_size)]).unsqueeze(1).cuda()
-# Shuffle the test data
-test_perm = torch.randperm(test_input.size(0))
-test_input = test_input[test_perm].float()
-test_output = test_output[test_perm].float()
+loss_classifier = nn.MSELoss()
+
+optimizer = torch.optim.Adam(simple_classifier.parameters(), lr=0.0001)
+
+def sample(tensor, n):
+    return tensor[torch.randperm(tensor.size(0))[:n]]
+
+train_sample_size = 300000
+
+low = sample(torch.cat(data[:_LOW_CLASS]), train_sample_size)
+high = sample(torch.cat(data[_HIGH_CLASS:]), train_sample_size)
+middle = [sample(data[i], train_sample_size) for i in range(_LOW_CLASS, _HIGH_CLASS)]
+
+inputs = torch.cat([low, high] + middle)
+output_labels = torch.cat(
+    [
+        torch.tensor([_LOW_CLASS-1]).expand(len(low), 1),
+        torch.tensor([_HIGH_CLASS]).expand(len(high), 1),
+    ]
+    + [
+        torch.tensor([_LOW_CLASS + i]).expand(
+            len(m), 1
+        )
+        for i, m in enumerate(middle)
+    ]
+)
+
+perm = torch.randperm(inputs.size(0))
+shuffled_inputs = inputs[perm].float()
+shuffled_output_labels = output_labels[perm].float()
+
+num_examples = shuffled_inputs.size(0)
+train_size = num_examples // 10 * 9
+train_input = shuffled_inputs[:train_size].cuda()
+train_output = shuffled_output_labels[:train_size].cuda()
+test_input = shuffled_inputs[train_size:].cuda()
+test_output = shuffled_output_labels[train_size:].cuda()
+
+
+# train_size = sample_size
+# test_size = sample_size // 10
+
+# small_data = torch.cat(data[_LOWLOW:_LOW])
+# small_data = small_data[torch.randperm(small_data.size(0))]
+# small_train = small_data[:train_size]
+# small_test = small_data[train_size : train_size + test_size]
+
+# print(small_data.shape, small_train.shape, small_test.shape)
+
+# large_data = torch.cat(data[_HIGH:_HIGHHIGH])
+# large_data = large_data[torch.randperm(large_data.size(0))]
+# large_train = large_data[:train_size]
+# large_test = large_data[train_size : train_size + test_size]
+
+# print(large_data.shape, large_train.shape, large_test.shape)
+
+# train_input = torch.cat([small_train, large_train])
+# train_output = (
+#     torch.cat([torch.ones(train_size), torch.zeros(train_size)]).unsqueeze(1).cuda()
+# )
+# # Shuffle the training data
+# train_perm = torch.randperm(train_input.size(0))
+# train_input = train_input[train_perm].float()
+# train_output = train_output[train_perm].float()
+
+# test_input = torch.cat([small_test, large_test])
+# test_output = (
+#     torch.cat([torch.ones(test_size), torch.zeros(test_size)]).unsqueeze(1).cuda()
+# )
+# # Shuffle the test data
+# test_perm = torch.randperm(test_input.size(0))
+# test_input = test_input[test_perm].float()
+# test_output = test_output[test_perm].float()
 
 _BATCH_SIZE = 128
-for epoch in range(1000):
+for epoch in range(10):
     print(f"Epoch {epoch}")
     for i in range(0, train_size, _BATCH_SIZE):
         optimizer.zero_grad()
-        output = simple(train_input[i:i + _BATCH_SIZE])
-        loss = loss_fn(output, train_output[i:i + _BATCH_SIZE])
+        output = simple_classifier(train_input[i : i + _BATCH_SIZE])
+        loss = loss_classifier(output, train_output[i : i + _BATCH_SIZE])
         loss.backward()
         optimizer.step()
     if epoch % 1 == 0:
         with torch.no_grad():
-            output = simple(test_input)
-            loss = loss_fn(output, test_output)
+            output = simple_classifier(test_input)
+            loss = loss_classifier(output, test_output)
             print(epoch, loss.item())
         with torch.no_grad():
-            output = simple(train_input[:10000])
-            loss = loss_fn(output, train_output[:10000])
+            output = simple_classifier(train_input[:10000])
+            loss = loss_classifier(output, train_output[:10000])
             print(epoch, loss.item())
+    if epoch % 5 == 0:
+        torch.save(simple_classifier.state_dict(), f"classifier{epoch:05}.pt")
