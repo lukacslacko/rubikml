@@ -318,35 +318,56 @@ _TRAIN_MODEL = False
 if not _TRAIN_MODEL:
     simple_classifier.load_state_dict(torch.load("classifier00005.pt"))
     state = _SOLVED_STATE
-    for _ in range(40):
+    task = []
+    for _ in range(12):
         move = random.choice([u, d, l, r, f, b])
         state = move(state)
+        task.append(move.__name__)
+    print(task)
     beam = torch.stack([state]).cuda()
-    beam_size = 20
+    beam_size = 15
     iter = 0
+    beam_depth = 2
+    cpu_beams = [beam.cpu()]
+    comes_from = [None]
     while True:
         print(f"Iteration {iter}")
         iter += 1
         next_states = []
         next_scores = []
+        scores_come_from = []
         for i, state in enumerate(beam):
-            print(f"Beam {i}")
-            news = candidates(state, depth=3)
+            print(".", end="")
+            news = candidates(state, depth=beam_depth)
             for j, new in enumerate(news):
                 if is_solved(new.cpu()):
                     print("Solved")
                     show_state(new)
+                    print(task)
+                    beam_idx = i
+                    curr_state = new.cpu()
+                    while beam_idx is not None:
+                        iter -= 1
+                        prev_state = cpu_beams[iter][beam_idx]
+                        beam_idx = comes_from[iter][beam_idx].item() if iter > 0 else None
+                        print(find_moves(prev_state, curr_state, beam_depth))
+                        show_state(prev_state)
+                        curr_state = prev_state
                     exit()
             scores = simple_classifier(news.float())
             #print(torch.min(scores), torch.max(scores), torch.mean(scores))
             min_ind = torch.topk(scores.flatten(), beam_size, largest=False).indices
             next_states.append(news[min_ind])
             next_scores.append(scores[min_ind])
+            scores_come_from.append(torch.tensor([i] * min_ind.size(0)).cuda())
         beam = torch.cat(next_states)
         beam_scores = torch.cat(next_scores)
         min_ind = torch.topk(beam_scores.flatten(), beam_size, largest=False).indices
         beam_scores = beam_scores[min_ind]
         beam = beam[min_ind]
+        origins = torch.cat(scores_come_from)[min_ind]
+        comes_from.append(origins)
+        cpu_beams.append(beam.cpu())
         print(torch.min(beam_scores).item(), torch.mean(beam_scores).item(), torch.max(beam_scores).item())
     exit()
 
