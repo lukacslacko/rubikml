@@ -405,6 +405,7 @@ if not _TRAIN_MODEL:
     print(task)
     print(pretty_steps(task))
     beam = torch.stack([state]).cuda()
+    already_seen_hashes = {hash_state(state.cpu())}
     iter = 0
     beam_size = 250
     beam_depth = 2
@@ -412,6 +413,8 @@ if not _TRAIN_MODEL:
     comes_from = [None]
     while True:
         print(f"Iteration {iter}")
+        total_considered = 0
+        total_skipped = 0
         iter += 1
         next_states = []
         next_scores = []
@@ -419,6 +422,20 @@ if not _TRAIN_MODEL:
         for i, state in enumerate(beam):
             print(".", end="")
             news = candidates(state, depth=beam_depth)
+            unseen_news = []
+            skipped = 0
+            for new in news:
+                h = hash_state(new.cpu())
+                if h not in already_seen_hashes:
+                    unseen_news.append(new)
+                    already_seen_hashes.add(h)
+                else:
+                    skipped += 1
+            total_considered += len(news)
+            total_skipped += skipped
+            if not unseen_news:
+                continue
+            news = torch.stack(unseen_news).cuda()
             for j, new in enumerate(news):
                 if is_solved(new.cpu()):
                     print("Solved")
@@ -439,12 +456,12 @@ if not _TRAIN_MODEL:
                         solve = last_moves + solve
                         show_state(prev_state)
                         curr_state = prev_state
-                    print(pretty_steps(task))
-                    print("-" * 40)
                     print(pretty_steps(solve))
                     print(s6)
                     print(pretty_steps(s6))
                     result = pretty_steps(solve + s6)
+                    print("-" * 40)
+                    print(pretty_steps(task))
                     print(result)
                     print(len(result.split(" ")))
                     exit()
@@ -472,6 +489,7 @@ if not _TRAIN_MODEL:
             torch.min(beam_scores).item(),
             torch.mean(beam_scores).item(),
             torch.max(beam_scores).item(),
+            f"Considered {total_considered}, Skipped {total_skipped}",
         )
     exit()
 
