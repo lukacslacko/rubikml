@@ -198,7 +198,7 @@ def run_steps(first_state, num_steps):
                 five_states = all_states.cpu()
             all_states = all_states[torch.randperm(all_states.size(0))[:sample_size]]
         data.append(all_states)
-        #print(step_count, time.time() - start, all_states.shape)
+        # print(step_count, time.time() - start, all_states.shape)
     return data, five_states
 
 
@@ -298,6 +298,85 @@ def thing():
 # ).cuda()
 # loss_fn = nn.MSELoss()
 
+
+def nice(steps):
+    if len(steps) == 0:
+        return []
+    first = steps[0]
+    count = 1
+    while count < len(steps) and steps[count] == first:
+        count += 1
+    modifier = (
+        "" if count == 1 else "2" if count == 2 else "'" if count == 3 else str(count)
+    )
+    result = [first.upper() + modifier] + nice(steps[count:])
+    return result
+
+
+def simplify_repeats(steps):
+    if len(steps) < 4:
+        return steps
+    first = steps[0]
+    count = 1
+    while count < len(steps) and steps[count] == first:
+        count += 1
+    if count >= 4:
+        return steps[4:]
+    return steps[:count] + simplify_repeats(steps[count:])
+
+
+def simplify_interleaves(steps):
+    if len(steps) == 0:
+        return steps
+    first = steps[0]
+    opposite = {'u': 'd', 'd': 'u', 'l': 'r', 'r': 'l', 'f': 'b', 'b': 'f'}
+    other = opposite[first]
+    count = 1
+    while count < len(steps) and steps[count] in [first, other]:
+        count += 1
+    slice = steps[:count]
+    return sorted(slice) + simplify_interleaves(steps[count:])
+
+def simplify(steps):
+    rep = simplify_repeats(steps)
+    if rep != steps:
+        return rep
+    inter = simplify_interleaves(steps)
+    if inter != steps:
+        return inter
+    return steps
+
+
+def pretty_steps(steps):
+    result = []
+    for step in steps:
+        for c in step:
+            if c in "ruf":
+                result.append(c)
+            else:
+                for _ in range(3):
+                    result.append(c)
+    while True:
+        simple = simplify(result)
+        if simple == result:
+            return " ".join(nice(result))
+        result = simple
+
+
+def solve6(state):
+    three = candidates(state.cuda(), 3)
+    three_hashes = {hash_state(s.cpu()): s for s in three}
+    first3 = candidates(_SOLVED_STATE, 3)
+    first3_hashes = {hash_state(s.cpu()): s for s in first3}
+    meet = set(three_hashes.keys()) & set(first3_hashes.keys())
+    if len(meet) == 0:
+        return []
+    meet = list(meet)[0]
+    return find_moves(state.cpu(), first3_hashes[meet].cpu(), 3) + find_moves(
+        first3_hashes[meet].cpu(), _SOLVED_STATE.cpu(), 3
+    )
+
+
 _HIDDEN = 512
 _DROPOUT = 0.25
 
@@ -319,15 +398,16 @@ if not _TRAIN_MODEL:
     simple_classifier.load_state_dict(torch.load("classifier00005.pt"))
     state = _SOLVED_STATE
     task = []
-    for _ in range(12):
+    for _ in range(35):
         move = random.choice([u, d, l, r, f, b])
         state = move(state)
         task.append(move.__name__)
     print(task)
+    print(pretty_steps(task))
     beam = torch.stack([state]).cuda()
-    beam_size = 15
+    beam_size = 20
     iter = 0
-    beam_depth = 2
+    beam_depth = 3
     cpu_beams = [beam.cpu()]
     comes_from = [None]
     while True:
@@ -346,16 +426,30 @@ if not _TRAIN_MODEL:
                     print(task)
                     beam_idx = i
                     curr_state = new.cpu()
+                    solve = []
+                    s6 = solve6(new.cpu())
                     while beam_idx is not None:
                         iter -= 1
                         prev_state = cpu_beams[iter][beam_idx]
-                        beam_idx = comes_from[iter][beam_idx].item() if iter > 0 else None
-                        print(find_moves(prev_state, curr_state, beam_depth))
+                        beam_idx = (
+                            comes_from[iter][beam_idx].item() if iter > 0 else None
+                        )
+                        last_moves = find_moves(prev_state, curr_state, beam_depth)
+                        print(last_moves)
+                        solve = last_moves + solve
                         show_state(prev_state)
                         curr_state = prev_state
+                    print(pretty_steps(task))
+                    print("-" * 40)
+                    print(pretty_steps(solve))
+                    print(s6)
+                    print(pretty_steps(s6))
+                    result = pretty_steps(solve + s6)
+                    print(result)
+                    print(len(result.split(" ")))
                     exit()
             scores = simple_classifier(news.float())
-            #print(torch.min(scores), torch.max(scores), torch.mean(scores))
+            # print(torch.min(scores), torch.max(scores), torch.mean(scores))
             min_ind = torch.topk(scores.flatten(), beam_size, largest=False).indices
             next_states.append(news[min_ind])
             next_scores.append(scores[min_ind])
@@ -368,15 +462,21 @@ if not _TRAIN_MODEL:
         origins = torch.cat(scores_come_from)[min_ind]
         comes_from.append(origins)
         cpu_beams.append(beam.cpu())
-        print(torch.min(beam_scores).item(), torch.mean(beam_scores).item(), torch.max(beam_scores).item())
+        print(
+            torch.min(beam_scores).item(),
+            torch.mean(beam_scores).item(),
+            torch.max(beam_scores).item(),
+        )
     exit()
 
 loss_classifier = nn.MSELoss()
 
 optimizer = torch.optim.Adam(simple_classifier.parameters(), lr=0.0001)
 
+
 def sample(tensor, n):
     return tensor[torch.randperm(tensor.size(0))[:n]]
+
 
 train_sample_size = 300000
 
@@ -387,15 +487,10 @@ middle = [sample(data[i], train_sample_size) for i in range(_LOW_CLASS, _HIGH_CL
 inputs = torch.cat([low, high] + middle)
 output_labels = torch.cat(
     [
-        torch.tensor([_LOW_CLASS-1]).expand(len(low), 1),
+        torch.tensor([_LOW_CLASS - 1]).expand(len(low), 1),
         torch.tensor([_HIGH_CLASS]).expand(len(high), 1),
     ]
-    + [
-        torch.tensor([_LOW_CLASS + i]).expand(
-            len(m), 1
-        )
-        for i, m in enumerate(middle)
-    ]
+    + [torch.tensor([_LOW_CLASS + i]).expand(len(m), 1) for i, m in enumerate(middle)]
 )
 
 perm = torch.randperm(inputs.size(0))
